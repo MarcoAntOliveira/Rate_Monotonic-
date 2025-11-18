@@ -9,91 +9,73 @@
 Adafruit_HMC5883_Unified mag = Adafruit_HMC5883_Unified(12345);
 VL53L0X sensorVL;
 
+// 🔧 DECLARAÇÃO DO MUTEX GLOBAL
+SemaphoreHandle_t i2cMutex;
+
 // ----------- TASK DO MAGNETÔMETRO ------------
-void TaskMag(void *pvParameters) {
-    (void) pvParameters;
+void taskMag(void *param){
+    while(true){
 
-    sensors_event_t event;
+        xSemaphoreTake(i2cMutex, portMAX_DELAY);
 
-    for (;;) {
+        sensors_event_t event;
         mag.getEvent(&event);
 
-        float heading = atan2(event.magnetic.y, event.magnetic.x);
-        if (heading < 0) heading += 2 * PI;
-        float headingDeg = heading * 180.0 / PI;
+        xSemaphoreGive(i2cMutex);
 
-        Serial.println("---- Magnetômetro ----");
-        Serial.printf("X: %.2f  Y: %.2f  Z: %.2f\n",
-                      event.magnetic.x, event.magnetic.y, event.magnetic.z);
+        Serial.print("[TASK_MAG] X: ");
+        Serial.print(event.magnetic.x);
+        Serial.print(" Y: ");
+        Serial.print(event.magnetic.y);
+        Serial.print(" Z: ");
+        Serial.println(event.magnetic.z);
 
-        Serial.printf("Heading: %.2f°\n", headingDeg);
-        Serial.println("------------------------\n");
-
-        vTaskDelay(pdMS_TO_TICKS(300));  // 300ms
+        vTaskDelay(200 / portTICK_PERIOD_MS);
     }
 }
 
 // ----------- TASK DO VL53L0X ------------
-void TaskVL53(void *pvParameters) {
-    (void) pvParameters;
+void taskVL53(void *param){
+    while(true){
 
-    for (;;) {
-        uint16_t distance = sensorVL.readRangeSingleMillimeters();
+        xSemaphoreTake(i2cMutex, portMAX_DELAY);
 
-        Serial.println("---- VL53L0X ----");
-        if (sensorVL.timeoutOccurred()) {
+        uint16_t dist = sensorVL.readRangeSingleMillimeters();
+        bool timeout = sensorVL.timeoutOccurred();
+
+        xSemaphoreGive(i2cMutex);
+
+        Serial.print("[TASK_VL53] ");
+
+        if(timeout){
             Serial.println("Timeout!");
         } else {
-            Serial.printf("Distância: %d mm\n", distance);
+            Serial.print(dist);
+            Serial.println(" mm");
         }
-        Serial.println("-----------------\n");
 
-        vTaskDelay(pdMS_TO_TICKS(200)); // 200ms
+        vTaskDelay(200 / portTICK_PERIOD_MS);
     }
 }
 
-// ----------------------------------------
-void setup() {
+
+// ------------------- SETUP -------------------
+void setup(){
     Serial.begin(115200);
-    Wire.begin(21, 22);
+    Wire.begin(21,22);
 
-    Serial.println("Inicializando sensores...");
-
-    // VL53L0X
+    mag.begin();
     sensorVL.init();
     sensorVL.setTimeout(500);
 
-    // Magnetômetro
-    if (!mag.begin()) {
-        Serial.println("⚠️ HMC5883L não encontrado!");
-        while (1);
-    }
+    // Criando mutex
+    i2cMutex = xSemaphoreCreateMutex();
 
-    Serial.println("Sensores detectados!\n");
-
-    // Criação das tasks
-    xTaskCreatePinnedToCore(
-        TaskMag,
-        "Task Mag",
-        4096,
-        NULL,
-        1,
-        NULL,
-        1   // core 1
-    );
-
-    xTaskCreatePinnedToCore(
-        TaskVL53,
-        "Task VL53",
-        4096,
-        NULL,
-        1,
-        NULL,
-        0   // core 0
-    );
+    // Criando tasks
+    xTaskCreate(taskMag,  "MagTask", 4096, NULL, 1, NULL);
+    xTaskCreate(taskVL53, "VL53Task", 4096, NULL, 1, NULL);
 }
 
 void loop() {
-    // Nada aqui! Tudo é FreeRTOS
     vTaskDelay(pdMS_TO_TICKS(1000));
 }

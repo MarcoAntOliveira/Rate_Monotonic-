@@ -4,7 +4,11 @@ build:
 moni:
 	@python3 ../osc.py
 
-	
+tasks:
+	@pio run -t upload
+	@python3 tasks.py
+
+
  run:
 	@python3 plot.py
 test:	
