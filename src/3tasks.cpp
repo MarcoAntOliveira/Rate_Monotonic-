@@ -1,81 +1,163 @@
 #include <Arduino.h>
-#include <Wire.h>
+#include <WiFi.h>
 
-// --- VL53L0X ---
-#include "VL53L0X.h"
-VL53L0X sensor;
+/* ===================== CONFIG WiFi AP ===================== */
+const char *AP_SSID = "ESP32_AP_RM";
+const char *AP_PASS = "12345678";
 
-// --- HMC5883L ---
-#include <Adafruit_Sensor.h>
-#include <Adafruit_HMC5883_U.h>
-Adafruit_HMC5883_Unified mag = Adafruit_HMC5883_Unified(12345);
+WiFiServer tcpServer(5005);
+WiFiClient client;
 
-// --- MPU6050 ---
-#include "MPU6050.h"
-MPU6050 mpu;
+/* ===================== GPIOs ===================== */
+#define LED_A   2
+#define LED_B   4
+#define LED_PLOT 5
+#define LED_SERVER 18
 
+/* ===================== PERÍODOS ===================== */
+#define TA_PERIOD_US      20000
+#define TB_PERIOD_US      30000
+#define TPLOT_PERIOD_US   50000
+
+#define TA_EXEC_US        2000
+#define TB_EXEC_US        3000
+#define TPLOT_EXEC_US     4000
+
+/* ===================== SERVIDOR DEFERRÁVEL ===================== */
+#define SERVER_PERIOD_US      40000
+#define SERVER_BUDGET_US      7000
+
+volatile int32_t server_budget_us = 0;
+volatile bool request_pending = false;
+
+/* ===================== BUSY WAIT SEM RESET ===================== */
+void busyWaitUs(uint32_t us) {
+    uint64_t start = esp_timer_get_time();
+    while ((esp_timer_get_time() - start) < us) {
+        // yield evita reset de watchdog
+        taskYIELD();
+    }
+}
+
+/* ===================== Task A ===================== */
+void taskA(void *p) {
+    TickType_t last = xTaskGetTickCount();
+
+    for(;;) {
+        digitalWrite(LED_A, HIGH);
+        busyWaitUs(TA_EXEC_US);
+        digitalWrite(LED_A, LOW);
+
+        vTaskDelayUntil(&last, pdMS_TO_TICKS(TA_PERIOD_US/1000));
+    }
+}
+
+/* ===================== Task B ===================== */
+void taskB(void *p) {
+    TickType_t last = xTaskGetTickCount();
+
+    for(;;) {
+        digitalWrite(LED_B, HIGH);
+        busyWaitUs(TB_EXEC_US);
+        digitalWrite(LED_B, LOW);
+
+        vTaskDelayUntil(&last, pdMS_TO_TICKS(TB_PERIOD_US/1000));
+    }
+}
+
+/* ===================== Task plot ===================== */
+void taskPlot(void *p) {
+    TickType_t last = xTaskGetTickCount();
+
+    for(;;) {
+        digitalWrite(LED_PLOT, HIGH);
+        busyWaitUs(TPLOT_EXEC_US);
+        digitalWrite(LED_PLOT, LOW);
+
+        vTaskDelayUntil(&last, pdMS_TO_TICKS(TPLOT_PERIOD_US/1000));
+    }
+}
+
+/* ===================== Aperiodic Server ===================== */
+void taskServer(void *p)
+{
+    TickType_t last = xTaskGetTickCount();
+
+    for(;;) {
+        server_budget_us = SERVER_BUDGET_US;
+        uint64_t start_period = esp_timer_get_time();
+
+        while ((esp_timer_get_time() - start_period) < SERVER_PERIOD_US) 
+        {
+            if (request_pending && server_budget_us > 0) {
+                digitalWrite(LED_SERVER, HIGH);
+
+                uint64_t t0 = esp_timer_get_time();
+
+                if (client && client.connected()) {
+                    client.println("SENSORES_OK");
+                }
+
+                busyWaitUs(2000); // custo
+
+                uint64_t t1 = esp_timer_get_time();
+                server_budget_us -= (t1 - t0);
+                request_pending = false;
+
+                digitalWrite(LED_SERVER, LOW);
+            }
+
+            taskYIELD();
+        }
+
+        vTaskDelayUntil(&last, pdMS_TO_TICKS(SERVER_PERIOD_US/1000));
+    }
+}
+
+/* ===================== Listener TCP ===================== */
+void taskListener(void *p)
+{
+    tcpServer.begin();
+
+    for(;;)
+    {
+        if (!client) {
+            client = tcpServer.available();
+        }
+        else if (client.available()) {
+            String cmd = client.readStringUntil('\n');
+            cmd.trim();
+            if (cmd == "GET") {
+                request_pending = true;
+            }
+        }
+
+        vTaskDelay(1);  // obrigatório para não resetar
+    }
+}
+
+/* ===================== Setup ===================== */
 void setup() {
-  Serial.begin(115200);
-  delay(1000);
+    Serial.begin(115200);
 
-  Wire.begin(21, 22);
-  Serial.println("Iniciando sensores...");
+    pinMode(LED_A, OUTPUT);
+    pinMode(LED_B, OUTPUT);
+    pinMode(LED_PLOT, OUTPUT);
+    pinMode(LED_SERVER, OUTPUT);
 
-  sensor.init();
-  sensor.setTimeout(500);
-  Serial.println("VL53L0X iniciado!");
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP(AP_SSID, AP_PASS);
 
-  // ---- HMC5883L ----
-  if (!mag.begin()) {
-    Serial.println("Falha ao iniciar HMC5883L!");
-    while (1);
-  }
-  Serial.println("HMC5883L iniciado!");
+    Serial.print("AP iniciado em: ");
+    Serial.println(WiFi.softAPIP());
 
-  // ---- MPU6050 ----
-  mpu.initialize();
-  if (!mpu.testConnection()) {
-    Serial.println("Falha ao iniciar MPU6050!");
-    while (1);
-  }
-  Serial.println("MPU6050 iniciado!");
+    // Prioridades RM
+    xTaskCreatePinnedToCore(taskA, "A", 4096, NULL, 3, NULL, 1);
+    xTaskCreatePinnedToCore(taskB, "B", 4096, NULL, 2, NULL, 1);
+    xTaskCreatePinnedToCore(taskPlot, "Plot", 4096, NULL, 1, NULL, 1);
+
+    xTaskCreatePinnedToCore(taskServer, "Serv", 4096, NULL, 4, NULL, 0);
+    xTaskCreatePinnedToCore(taskListener, "Listen", 4096, NULL, 5, NULL, 0);
 }
 
-void loop() {
-
-  // ----- VL53L0X -----
-  if (sensor.timeoutOccurred()) {
-    Serial.println("Timeout");
-  } else {
-    //Serial.print("Distancia: ");
-    Serial.print(distance);
-    Serial.println(" mm");
-  }
-
-    delay(200);
-
-
-
-
-  // ----- HMC5883L -----
-  sensors_event_t event;
-  mag.getEvent(&event);
-  Serial.print("Mag X: "); Serial.print(event.magnetic.x);
-  Serial.print("  Y: "); Serial.print(event.magnetic.y);
-  Serial.print("  Z: "); Serial.println(event.magnetic.z);
-
-  // ----- MPU6050 -----
-  int16_t ax, ay, az, gx, gy, gz;
-  mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
-
-  Serial.print("Accel X: "); Serial.print(ax);
-  Serial.print(" Y: "); Serial.print(ay);
-  Serial.print(" Z: "); Serial.println(az);
-
-  Serial.print("Gyro  X: "); Serial.print(gx);
-  Serial.print(" Y: "); Serial.print(gy);
-  Serial.print(" Z: "); Serial.println(gz);
-
-  Serial.println("---------------------------");
-  delay(400);
-}
+void loop() {}
