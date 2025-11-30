@@ -1,158 +1,98 @@
-# Análise de Escalonabilidade (Rate Monotonic Scheduling) para Sistema com Sensores
-
-Este documento descreve a análise de escalonabilidade utilizando o algoritmo **Rate Monotonic (RM)** para um conjunto de tarefas periódicas executadas em um ESP32. Também apresenta justificativas dos tempos utilizados, fontes de referência, e uma proposta de períodos escalonáveis.
+Com certeza! Vou consolidar o **README** e a análise de utilização em um único arquivo `.md` (Markdown), ideal para repositórios de código.
 
 ---
 
-## 1. Objetivo
+# `README.md`: Sistema de Sensores em Tempo Real (RM/DS) no ESP32
 
-Garantir que o conjunto de tarefas do sistema embarcado (sensores + tarefa de plotagem/transmissão serial) seja **escalonável**, evitando:
+## 🎯 Visão Geral
 
-* travamentos do ESP32,
-* leituras atrasadas ou perdidas,
-* mensagens corrompidas na serial,
-* perdas de deadline,
-* uso excessivo de CPU.
+Este projeto implementa um sistema embarcado de tempo real usando **FreeRTOS** em um **ESP32**. O objetivo é coletar dados de sensores (GY521 e QMC5883L) e atender a requisições de rede (GET via WiFi AP) com garantias de tempo.
+
+O escalonamento utiliza o **Rate Monotonic (RM)** para tarefas periódicas de sensor e o modelo **Deferrable Server (DS)** para a tarefa aperiódica de rede, garantindo previsibilidade e baixo atraso de serviço. O código também implementa medições de **WCET** e **Jitter** para validação empírica.
 
 ---
 
-## 2. Tarefas Envolvidas
+## ⚙️ Arquitetura e Configuração
 
-Para esta análise, consideramos as seguintes tarefas periódicas:
+### 1. Tarefas Periódicas (Rate Monotonic - RM)
 
-* **MPU6050 (GY-521)** – leitura de acelerômetro/giroscópio.
-* **HMC5883L (Magnetômetro)** – leitura de campo magnético.
-* **VL53L0X** (se houver) – utilizado apenas se a aplicação exigir distância.
-* **Tarefa de plotagem/transmissão serial** – tarefa que envia dados à porta serial para o Python (uso crítico).
+As tarefas de leitura de sensor são escalonadas por **Prioridade Fixa (RM)**, onde o menor período recebe a maior prioridade. Todas executam no `PRO_CPU_NUM`.
 
-**Observação importante**: por solicitação do usuário, nesta versão **o VL53L0X não faz parte do conjunto principal de tarefas**. A tarefa crítica é a **task de plotagem/transmissão**.
+| Tarefa | Função | Período ($T_i$) | Prioridade FreeRTOS |
+| :---: | :---: | :---: | :---: |
+| **`taskGyro`** | Eixos de ângulo (AX, AY, AZ) | $500 \, \text{ms}$ | 3 (Mais Alta) |
+| **`taskIMU`** | Atitude (Pitch, Roll, Yaw) | $1000 \, \text{ms}$ | 2 |
+| **`taskMag`** | Eixos Magnéticos (X, Y, Z) | $2000 \, \text{ms}$ | 1 (Mais Baixa) |
 
----
+### 2. Tarefa Aperiódica (Deferrable Server - DS)
 
-## 3. Tempos de Execução (C)
+A tarefa de rede é modelada como um **Deferrable Server** para atendimento rápido de requisições **"GET"** sem comprometer a escalabilidade do sistema.
 
-Os tempos abaixo foram obtidos a partir de documentação oficial, medições típicas divulgadas pela comunidade e testes empíricos realizados em projetos anteriores.
-
-### ✔ GY-521 — MPU6050
-
-* Operação: leitura via I2C do acelerômetro e giroscópio.
-* Tempo médio de comunicação e conversão: **1.0 a 1.5 ms**.
-* Valor adotado: **C₁ = 1.2 ms**.
-
-**Fontes:**
-
-* Kalman/Mahony examples para ESP32.
-* Benchmarks públicos de leitura I2C em 400 kHz.
-* Medições de ciclo usando `micros()`.
-
-### ✔ HMC5883L — Magnetômetro
-
-* Conversão interna ≈ 6 a 8 ms, mas leitura por I2C é rápida (apenas aquisição do registrador).
-* Tempo de leitura típico no ESP32: **0.8 – 1.4 ms**.
-* Valor adotado: **C₂ = 1.0 ms**.
-
-**Fontes:**
-
-* Datasheet HMC5883L.
-* Testes com biblioteca Adafruit.
-
-### ✔ Tarefa de Plotagem/Transmissão Serial
-
-* A função de plotar no Matplotlib está no PC; no ESP32 apenas enviamos texto.
-* O gargalo é a UART: transmissão de strings longas consome tempo.
-* Transmitir uma linha de ~80 bytes a 115200 baud ≈ **6.9 ms**.
-* Com formatação (snprintf + prints): **C₃ ≈ 2.0 ms**.
-
-**Fontes:**
-
-* Fórmula: tempo = bits / baud.
-* baud = 115200 → 11.52 kB/s.
-* Testes práticos com `vTaskGetRunTimeStats()`.
+| Tarefa | Função | Orçamento ($C_s$) | Período ($T_s$) | Prioridade FreeRTOS |
+| :---: | :---: | :---: | :---: | :---: |
+| **`taskServer`** | Processamento de GET e envio de dados | $14 \, \text{ms}$ | $40 \, \text{ms}$ | 4 (Preempta Sensores) |
 
 ---
 
-## 4. Períodos Escolhidos (T)
+## 📈 Análise de Utilização e Escalabilidade
 
-Para garantir escalonabilidade:
+O sistema é analisado usando o teste de escalabilidade para o modelo Deferrable Server (DS) de tarefas periódicas + um servidor aperiódico.
 
-| Tarefa          | Período sugerido   |
-| --------------- | ------------------ |
-| GY-521          | **20 ms** (50 Hz)  |
-| Mag             | **100 ms** (10 Hz) |
-| Plotagem/Serial | **50 ms** (20 Hz)  |
+### A. Cálculo da Utilização do Servidor ($U_s$)
 
-Motivos:
+A utilização do servidor é definida pela relação entre seu Orçamento ($C_s$) e seu Período de Recarga ($T_s$):
 
-* 20 ms é um período amplamente usado para IMUs.
-* O magnetômetro não precisa de muita frequência.
-* A tarefa de plotagem não pode ser muito rápida para não congestionar a UART.
+$$U_s = \frac{C_s}{T_s} = \frac{14 \, \text{ms}}{40 \, \text{ms}} = \mathbf{0.35} \quad (\mathbf{35\%})$$
 
----
+### B. Cálculo do Limite de Utilização (Bound - $U_{\text{limite}}$)
 
-## 5. Cálculo da Utilização Total (U)
+O limite de utilização ($\mathbf{U_{\text{limite}}}$) para as $n=3$ tarefas periódicas com um DS de $U_s=0.35$ é calculado pela fórmula:
 
-Para o algoritmo RM (Rate Monotonic) de Liu & Layland:
+$$U_{\text{limite}} = n \left(K^{1/n} - 1\right) \quad \text{onde} \quad K = \frac{U_s + 2}{2U_s + 1}$$
 
-[
-U = \sum \frac{C_i}{T_i}
-]
+1.  **Cálculo de $K$:**
+    $$K = \frac{0.35 + 2}{2(0.35) + 1} = \frac{2.35}{1.7} \approx 1.38235$$
 
-Substituindo:
+2.  **Cálculo de $U_{\text{limite}}$:**
+    $$U_{\text{limite}} \approx 3 \left((1.38235)^{1/3} - 1\right) \approx 3 (1.1141 - 1) \approx \mathbf{0.3423}$$
 
-* GY: 1.2 / 20 = **0.06**
-* MAG: 1.0 / 100 = **0.01**
-* Serial/Plot: 2.0 / 50 = **0.04**
+O limite de utilização teórica ($\mathbf{U_{b}}$) para as tarefas periódicas é de **$34.23\%$**.
 
-### Total:
+### C. Conclusão da Escalabilidade
 
-[
-U = 0.06 + 0.01 + 0.04 = 0.11
-]
+A **Utilização Periódica Real ($U_p^{\text{real}}$)** (calculada com os WCETs medidos) é dada por:
+
+$$U_p^{\text{real}} = \frac{\mathbf{WCET\_GYRO}}{500000} + \frac{\mathbf{WCET\_IMU}}{1000000} + \frac{\mathbf{WCET\_MAG}}{2000000}$$
+
+Como o WCET de leituras I2C é tipicamente muito baixo (na ordem de centenas de $\mu\text{s}$), a utilização $U_p^{\text{real}}$ será $\ll 1\%$.
+
+**Resultado:** O sistema é **escalonável**. O requisito de $U_p^{\text{real}} \le 34.23\%$ é facilmente atendido. O sistema opera com uma grande folga, garantindo que mesmo os atrasos introduzidos pela preempção do servidor ($C_s = 14 \, \text{ms}$) não farão com que as tarefas periódicas percam seus prazos.
 
 ---
 
-## 6. Limite de Escalonabilidade (RM)
+## 🔬 Métricas em Tempo Real (WCET e Jitter)
 
-Para 3 tarefas:
+O código captura as seguintes métricas (em $\mu\text{s}$) e as imprime no `loop()` para validação:
 
-[
-U_{max} = 3 (2^{1/3} - 1) ≈ 0.779
-]
+| Métrica | Descrição | Variáveis Monitoradas |
+| :---: | :---: | :---: |
+| **WCET ($C_i$)** | **Pior Caso de Tempo de Execução**. Indica o $C_i$ mais alto observado para a seção crítica (I2C + empacotamento) ou para o serviço de rede. | `wcet_mag`, `wcet_imu`, `wcet_gyro`, `wcet_server` |
+| **Jitter** | **Máximo Desvio de Ativação**. O desvio absoluto máximo observado entre o período nominal ($T_i$) e o tempo real entre as ativações da tarefa. | `jitter_mag`, `jitter_imu`, `jitter_gyro` |
 
-Comparando:
+### ⚠️ Avaliação do WCET do Servidor
 
-* **Uso real: 0.11 (11%)**
-* **Limite RM: 77.9%**
-
-### ✔ O sistema é escalonável com ampla margem de segurança.
+Se o `wcet_server` medido exceder o orçamento alocado ($14000 \, \mu\text{s}$), o serviço está estourando o *budget*, e o parâmetro $C_s$ deve ser aumentado ou a lógica de serviço simplificada para manter a validade da garantia de tempo.
 
 ---
 
-## 7. Prioridades RM
+## 🌐 Conexão e Uso
 
-No RM, tarefas com **períodos menores** têm prioridade maior:
-
-1. **GY-521** → maior prioridade
-2. **Plotagem/Serial** → prioridade intermediária
-3. **Magnetômetro** → menor prioridade
-
----
-
-## 8. Conclusão
-
-O conjunto de tarefas (GY-521 + MAG + task de plotagem serial) é **plenamente escalonável usando Rate Monotonic**, com apenas 11% da CPU ocupada.
-
-A remoção do VL53L0X como tarefa periódica facilita muito o escalonamento.
-
-Recomendação: manter a saída serial compacta para não estourar o tempo de execução da task de plotagem.
-
----
-
-## 9. Próximos Passos
-
-* Implementar tarefas FreeRTOS com `vTaskDelayUntil()`.
-* Atribuir prioridades conforme RM.
-* Garantir que apenas **uma** task envie dados pela UART.
-* Otimizar strings para não saturar a porta serial.
-
-Se desejar, posso montar o **código completo do FreeRTOS** com as prioridades RM e as tasks prontas.
+1.  **Upload:** Faça o upload do código no ESP32.
+2.  **WiFi:** O ESP32 iniciará um Ponto de Acesso (AP):
+    * **SSID:** `ESP32_AP_RM`
+    * **Senha:** `12345678`
+3.  **IP:** O IP do AP é geralmente `192.168.4.1`.
+4.  **Cliente:** Conecte um cliente (e.g., Python, navegador) ao IP e porta `5005`.
+5.  **Requisição:** Envie o comando **`GET\n`** via socket TCP.
+6.  **Resposta:** O servidor (DS) será acionado para drenar a fila de sensores e retornar os dados (no formato `TAG:v1,v2,v3|TAG:v1,v2,v3|...`).
+7.  **Monitor Serial:** Monitore as métricas de WCET e Jitter, que são atualizadas a cada 5 segundos.

@@ -1,12 +1,6 @@
-#include <Arduino.h>
-#include "QMC5883L.h"
-
-QMC5883L mag;
-SemaphoreHandle_t i2cMutex;
-QueueHandle_t magQueue;
-
+#include "mag.h"
 void taskMag(void *pvParameters) {
-    QMC5883L mag(0x0D);
+   
 
     // Inicializa o sensor com mutex
     xSemaphoreTake(i2cMutex, portMAX_DELAY);
@@ -56,25 +50,4 @@ void taskProcessMag(void *pvParameters) {
 
         vTaskDelay(pdMS_TO_TICKS(50));
     }
-}
-
-
-void setup() {
-    Serial.begin(115200);
-    Wire.begin(21, 22);      // ESP32 pins
-    if (!mag.begin(Wire)) {
-        Serial.println("❌ Erro ao iniciar HMC5883L!");
-        while (1);
-    }
-}
-
-void loop() {
-    int x, y, z;
-    if (mag.read(x, y, z)) {
-        Serial.printf("X: %d  Y: %d  Z: %d\n", x, y, z);
-    } else {
-        Serial.println("Erro lendo o sensor");
-    }
-
-    delay(500);
 }

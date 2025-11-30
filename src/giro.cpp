@@ -1,49 +1,55 @@
-#include <Wire.h>
-#include <Adafruit_MPU6050.h>
-#include <Adafruit_Sensor.h>
-#include <Arduino.h>
+#include "GY521.h"
 
-Adafruit_MPU6050 mpu;
+GY521 sensor(0x68);
 
-void setup() {
+uint32_t counter = 0;
+
+void setup()
+{
   Serial.begin(115200);
-  while (!Serial)
-    delay(10);
+  Serial.println();
+  Serial.println(__FILE__);
+  Serial.print("GY521_LIB_VERSION: ");
+  Serial.println(GY521_LIB_VERSION);
 
-  Serial.println("Inicializando MPU6050...");
+  // PINOS I2C DO ESP32
+  Wire.begin(21, 22);   // <<< ESSENCIAL
 
-  if (!mpu.begin()) {
-    Serial.println("Falha ao encontrar MPU6050!");
-    while (1) {
-      delay(1000);
-    }
+  delay(100);
+  while (sensor.wakeup() == false)
+  {
+    Serial.print(millis());
+    Serial.println("\tCould not connect to GY521: please check the GY521 address (0x68/0x69)");
+    delay(1000);
   }
 
-  Serial.println("MPU6050 encontrado!");
+  sensor.setAccelSensitivity(2);  // 8 g
+  sensor.setGyroSensitivity(1);   // 500 °/s
 
-  mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
-  mpu.setGyroRange(MPU6050_RANGE_500_DEG);
-  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+  sensor.setThrottle();
+  Serial.println("start...");
+
+  sensor.axe = 0.574;
+  sensor.aye = -0.002;
+  sensor.aze = -1.043;
+  sensor.gxe = 10.702;
+  sensor.gye = -6.436;
+  sensor.gze = -0.676;
 }
 
-void loop() {
-  sensors_event_t a, g, temp;
-  mpu.getEvent(&a, &g, &temp);
+void loop()
+{
+  sensor.read();
+  float x = sensor.getAngleX();
+  float y = sensor.getAngleY();
+  float z = sensor.getAngleZ();
 
-  Serial.print("Aceleração X: ");
-  Serial.print(a.acceleration.x);
-  Serial.print("  Y: ");
-  Serial.print(a.acceleration.y);
-  Serial.print("  Z: ");
-  Serial.println(a.acceleration.z);
+  Serial.print(x, 1);
+  Serial.print('\t');
+  Serial.print(y, 1);
+  Serial.print('\t');
+  Serial.print(z, 1);
+  Serial.println();
 
-  Serial.print("Giro X: ");
-  Serial.print(g.gyro.x);
-  Serial.print("  Y: ");
-  Serial.print(g.gyro.y);
-  Serial.print("  Z: ");
-  Serial.println(g.gyro.z);
-
-  Serial.println("----------------------");
-  delay(500);
+  counter++;
 }
