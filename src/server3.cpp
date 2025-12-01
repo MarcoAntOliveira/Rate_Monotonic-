@@ -368,8 +368,8 @@ void taskListener(void *p) {
 // ---------- SETUP ----------
 
 void setup() {
-  disableCore0WDT();
-  disableCore1WDT();
+  //disableCore0WDT();
+  //disableCore1WDT();
 
   Serial.begin(115200);
   delay(200);

@@ -96,3 +96,10 @@ Se o `wcet_server` medido exceder o orçamento alocado ($14000 \, \mu\text{s}$),
 5.  **Requisição:** Envie o comando **`GET\n`** via socket TCP.
 6.  **Resposta:** O servidor (DS) será acionado para drenar a fila de sensores e retornar os dados (no formato `TAG:v1,v2,v3|TAG:v1,v2,v3|...`).
 7.  **Monitor Serial:** Monitore as métricas de WCET e Jitter, que são atualizadas a cada 5 segundos.
+
+## Esquematica do projeto 
+
+![Esquematica do projeto](images/image.png)
+
+A esquematica foi desenhada no software kicad e alguns dos componetes foram adaptados para o modelo usado no projeto
+
